@@ -17,6 +17,8 @@ library(DBI)
  
 # list of dbs to be investigated across instances, hash prefix will exclude
 dbs <- read.table("dbs.txt")[[1]]
+fldr <- "~/scr/migr_rds"
+dir.create(fldr)
 
 tab_manifest <- read.csv("tab_manifest.csv")
 tab_manifest <- tab_manifest[!tab_manifest$ignore,]
@@ -30,7 +32,7 @@ get_db_con <- function(db, instance_alias) {
               user = Sys.getenv(paste0(instance_alias, "_USER")),
               password = Sys.getenv(paste0(instance_alias, "_PWD")))
 }
- 
+
 # get all the non-system schemas and tables at a connection
 #get_schemas_and_tables <- function(con) {
 #    d <- dbGetQuery(con, "
@@ -73,10 +75,17 @@ get_table_hash <- function(con, schema, table) {
          return(d)
      })
 }
+
+# set a given parameter for the session
+set_session_config <- function(con, parameter, value) {
+    sql  <- paste0('set ', parameter, ' to ', value, ';')
+    d <- dbGetQuery(con, sql)
+    return(d)
+}
  
 # put functions together to get row counts and hashes for every table in every
 # schema at a given connection
-get_rc_and_hash_in_db_instance <- function(con, db) {
+get_rc_and_hash_in_db_instance <- function(con, db, instance_name) {
     d <- tab_manifest[tab_manifest$db == db, c("db", "schema", "table")]
     d$row_count <- c(NA)
     d$hash <- c(NA)
@@ -84,7 +93,7 @@ get_rc_and_hash_in_db_instance <- function(con, db) {
         d$row_count[r] <- get_row_count(con, d$schema[r], d$table[r])
         d$hash[r] <- get_table_hash(con, d$schema[r], d$table[r])
     }
-    saveRDS(d, paste0(db, "_aws.rds"))
+    saveRDS(d, paste0(fldr, "/_", db, "_", instance_name, ".rds"))
     return(d)
 }
  
@@ -107,7 +116,8 @@ get_rc_and_hash_across_db_instances <- function(db, instance_aliases) {
     for (i in seq_along(instance_names)) {
         cat(paste0("\n-- sourcing data from ", db, " on ", instance_names[i]))
         con <- get_db_con(db, instance_aliases[i])
-        d <- get_rc_and_hash_in_db_instance(con, db)
+        set_session_config(con, "extra_float_digits", -15)
+        d <- get_rc_and_hash_in_db_instance(con, db, instance_names[i])
         # if this is the first instance then create the df
         if (i == 1) {
             out <- d
@@ -122,9 +132,9 @@ get_rc_and_hash_across_db_instances <- function(db, instance_aliases) {
 }
  
 d <- lapply(dbs, FUN = function(x) {
-                get_rc_and_hash_across_db_instances(x, c("B"))
+                get_rc_and_hash_across_db_instances(x, c("A", "B"))
                           })
  
-sqlite_con <- dbConnect(RSQLite::SQLite(), dbname = "index_compare.db")
-dbWriteTable(sqlite_con, "hash_rc", d[[1]], overwrite = T, row.names = F)
+# sqlite_con <- dbConnect(RSQLite::SQLite(), dbname = "index_compare.db")
+# dbWriteTable(sqlite_con, "hash_rc", d[[1]], overwrite = T, row.names = F)
 saveRDS(d, "rc_hash.rds")
